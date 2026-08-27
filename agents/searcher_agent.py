@@ -1,8 +1,8 @@
 """
 Searcher Agent
 --------------
-Collects real information from web and academic search results.
-Returns structured research data for the Writer Agent.
+Collects real information from web sources
+and academic sources based on the research topic.
 """
 
 import os
@@ -10,15 +10,35 @@ import time
 import serpapi
 
 
-def search_web(query, num_results=5):
+def get_api_key():
+    """
+    Get SerpApi key.
+
+    Works with:
+    - Streamlit Cloud secrets
+    - Local environment variables
+    """
+
+    try:
+        import streamlit as st
+
+        if "SERPAPI_KEY" in st.secrets:
+            return st.secrets["SERPAPI_KEY"]
+    except Exception:
+        pass
+
+    return os.getenv("SERPAPI_KEY")
+
+
+def search_google(query, num_results=5):
     """Search Google using SerpApi."""
 
-    api_key = os.getenv("SERPAPI_KEY")
+    api_key = get_api_key()
 
     if not api_key:
         raise ValueError(
-            "SERPAPI_KEY is not configured. "
-            "Add your SerpApi API key to the environment variables."
+            "SERPAPI_KEY is missing. "
+            "Add it to Streamlit Secrets."
         )
 
     client = serpapi.Client(api_key=api_key)
@@ -35,12 +55,15 @@ def search_web(query, num_results=5):
 
 
 def search_scholar(query, num_results=5):
-    """Search Google Scholar for academic papers."""
+    """Search Google Scholar."""
 
-    api_key = os.getenv("SERPAPI_KEY")
+    api_key = get_api_key()
 
     if not api_key:
-        raise ValueError("SERPAPI_KEY is not configured.")
+        raise ValueError(
+            "SERPAPI_KEY is missing. "
+            "Add it to Streamlit Secrets."
+        )
 
     client = serpapi.Client(api_key=api_key)
 
@@ -54,74 +77,94 @@ def search_scholar(query, num_results=5):
     return results
 
 
-def extract_web_sources(results):
-    """Extract useful information from Google results."""
+def extract_google_results(results):
+    """Extract Google search results."""
 
     sources = []
 
-    for result in results.get("organic_results", []):
-        title = result.get("title", "")
-        link = result.get("link", "")
-        snippet = result.get("snippet", "")
+    for item in results.get("organic_results", []):
 
-        if title and link:
-            sources.append({
-                "title": title,
-                "url": link,
-                "snippet": snippet,
-                "source_type": "Web"
-            })
+        title = item.get("title", "")
+        url = item.get("link", "")
+        snippet = item.get("snippet", "")
+
+        if not title or not url:
+            continue
+
+        sources.append({
+            "title": title,
+            "url": url,
+            "snippet": snippet,
+            "year": item.get("date", "N/A"),
+            "venue": "Web",
+            "source_type": "Web"
+        })
 
     return sources
 
 
-def extract_scholar_sources(results):
-    """Extract useful information from Google Scholar results."""
+def extract_scholar_results(results):
+    """Extract academic search results."""
 
     sources = []
 
-    for result in results.get("organic_results", []):
-        title = result.get("title", "")
-        link = result.get("link", "")
-        snippet = result.get("snippet", "")
+    for item in results.get("organic_results", []):
 
-        publication_info = result.get("publication_info", {})
+        title = item.get("title", "")
+        url = item.get("link", "")
+        snippet = item.get("snippet", "")
 
-        summary = publication_info.get("summary", "")
+        publication_info = item.get(
+            "publication_info",
+            {}
+        )
 
-        if title and link:
-            sources.append({
-                "title": title,
-                "url": link,
-                "snippet": snippet,
-                "publication_info": summary,
-                "source_type": "Academic"
-            })
+        publication_summary = publication_info.get(
+            "summary",
+            ""
+        )
+
+        if not title:
+            continue
+
+        sources.append({
+            "title": title,
+            "url": url,
+            "snippet": snippet,
+            "year": "N/A",
+            "venue": publication_summary,
+            "source_type": "Academic"
+        })
 
     return sources
 
 
-def build_research_queries(subject):
-    """Create multiple searches for better research coverage."""
+def remove_duplicates(sources):
+    """Remove duplicate URLs."""
 
-    return [
-        f"{subject} overview",
-        f"{subject} latest developments",
-        f"{subject} applications advantages challenges",
-    ]
+    unique = []
+    seen = set()
+
+    for source in sources:
+
+        url = source.get("url", "")
+
+        if url and url not in seen:
+            seen.add(url)
+            unique.append(source)
+
+    return unique
 
 
 def searcher_agent(plan: dict) -> dict:
     """
-    Searcher Agent:
-    Collects real research information based on the planner's output.
+    Searcher Agent.
 
-    Args:
-        plan: dict produced by planner_agent
-
-    Returns:
-        dict containing research information and sources.
+    Performs real web and academic searches and returns
+    information in the format expected by writer_agent.py.
     """
+
+    time.sleep(0.5)
 
     subject = plan.get("subject", "").strip()
     input_type = plan.get("input_type", "topic")
@@ -131,182 +174,192 @@ def searcher_agent(plan: dict) -> dict:
         return {
             "status": "error",
             "message": "No research topic was provided.",
-            "abstract": "",
-            "key_findings": [],
-            "methodology": "",
-            "analysis": "",
-            "conclusion": "",
-            "sources": []
+            "subject": "",
+            "sources": [],
+            "key_findings": []
         }
 
     try:
 
-        # ------------------------------------------------
-        # CASE 1: USER PROVIDED A URL
-        # ------------------------------------------------
+        sources = []
 
-        if input_type == "url":
+        # --------------------------------------------------
+        # NORMAL TOPIC SEARCH
+        # --------------------------------------------------
 
-            search_query = f'"{subject}"'
+        if input_type != "url":
 
-            web_results = search_web(
-                search_query,
-                num_results=5
-            )
-
-            web_sources = extract_web_sources(web_results)
-
-            # Also search academically related information
-            scholar_results = search_scholar(
+            queries = [
                 subject,
-                num_results=5
-            )
+                f"{subject} latest research",
+                f"{subject} applications challenges",
+            ]
 
-            scholar_sources = extract_scholar_sources(
-                scholar_results
-            )
-
-            sources = web_sources + scholar_sources
-
-            # Remove duplicate URLs
-            unique_sources = []
-            seen_urls = set()
-
-            for source in sources:
-
-                url = source.get("url")
-
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    unique_sources.append(source)
-
-            sources = unique_sources
-
-        # ------------------------------------------------
-        # CASE 2: NORMAL TOPIC SEARCH
-        # ------------------------------------------------
-
-        else:
-
-            queries = build_research_queries(subject)
-
-            sources = []
-
-            # Search multiple related queries
             for query in queries:
 
-                results = search_web(
+                results = search_google(
                     query,
                     num_results=5
                 )
 
                 sources.extend(
-                    extract_web_sources(results)
+                    extract_google_results(results)
                 )
 
-            # Academic search
+            # Academic research
             scholar_results = search_scholar(
                 subject,
                 num_results=5
             )
 
             sources.extend(
-                extract_scholar_sources(
+                extract_scholar_results(
                     scholar_results
                 )
             )
 
-            # Remove duplicate URLs
-            unique_sources = []
-            seen_urls = set()
+        # --------------------------------------------------
+        # URL / PAPER SEARCH
+        # --------------------------------------------------
 
-            for source in sources:
+        else:
 
-                url = source.get("url")
+            results = search_google(
+                subject,
+                num_results=5
+            )
 
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    unique_sources.append(source)
+            sources.extend(
+                extract_google_results(results)
+            )
 
-            sources = unique_sources
+            scholar_results = search_scholar(
+                subject,
+                num_results=5
+            )
 
-        # ------------------------------------------------
-        # CREATE RESEARCH TEXT FOR WRITER AGENT
-        # ------------------------------------------------
+            sources.extend(
+                extract_scholar_results(
+                    scholar_results
+                )
+            )
 
-        research_text = []
+        # Remove duplicates
+        sources = remove_duplicates(sources)
 
-        for source in sources:
+        # --------------------------------------------------
+        # IF NOTHING WAS FOUND
+        # --------------------------------------------------
+
+        if not sources:
+
+            return {
+                "status": "error",
+                "message": (
+                    f"No search results found for '{subject}'."
+                ),
+                "subject": subject,
+                "sources": [],
+                "key_findings": []
+            }
+
+        # --------------------------------------------------
+        # BUILD ACTUAL RESEARCH CONTENT
+        # --------------------------------------------------
+
+        findings = []
+
+        for source in sources[:8]:
+
+            snippet = source.get(
+                "snippet",
+                ""
+            ).strip()
+
+            if snippet:
+
+                findings.append(snippet)
+
+        # Use first few results as the research summary
+        summary_parts = []
+
+        for source in sources[:5]:
 
             title = source.get("title", "")
             snippet = source.get("snippet", "")
-            source_type = source.get(
-                "source_type",
-                "Web"
-            )
 
-            research_text.append(
-                f"[{source_type}] {title}\n"
-                f"{snippet}"
-            )
+            if snippet:
 
-        combined_research = "\n\n".join(
-            research_text
+                summary_parts.append(
+                    f"{title}: {snippet}"
+                )
+
+        research_summary = "\n\n".join(
+            summary_parts
         )
 
-        # ------------------------------------------------
-        # RETURN STRUCTURED DATA
-        # ------------------------------------------------
+        # --------------------------------------------------
+        # RETURN DATA FOR WRITER
+        # --------------------------------------------------
 
         return {
 
             "title": f"Research Report: {subject}",
 
+            "subject": subject,
+
+            "input_type": input_type,
+
+            "mode": mode,
+
             "abstract": (
-                f"Research information collected for the topic "
-                f"'{subject}' from multiple web and academic sources."
+                f"This research examines {subject} "
+                f"using information collected from "
+                f"multiple web and academic sources. "
+                f"The search focused on recent developments, "
+                f"applications, findings, and challenges "
+                f"related to the topic."
             ),
 
-            "key_findings": [
-                item.get("snippet", "")
-                for item in sources[:8]
-                if item.get("snippet")
-            ],
+            "key_findings": findings,
 
             "methodology": (
-                "Information was collected using web search "
-                "and academic search results. Multiple queries "
-                "were used to improve coverage and reduce "
-                "dependence on a single source."
+                "Information was collected through "
+                "multiple web searches and academic "
+                "literature searches. Results from "
+                "different queries were combined and "
+                "duplicate sources were removed."
             ),
 
-            "analysis": combined_research,
+            "analysis": research_summary,
 
             "conclusion": (
-                f"The collected sources provide information "
-                f"about {subject}. The Writer Agent should "
-                f"synthesize these sources into the requested "
-                f"research format."
+                f"The collected research provides "
+                f"multiple perspectives on {subject}. "
+                f"The findings and source information "
+                f"should be considered together when "
+                f"evaluating the topic."
             ),
 
             "sources": sources,
 
             "source_count": len(sources),
 
-            "mode": mode,
-
-            "input_type": input_type,
-
-            "subject": subject,
-
-            "status": "Real research data collected successfully"
+            "status": (
+                "Research data collected successfully"
+            )
         }
 
     except Exception as e:
 
+        # IMPORTANT:
+        # Do not silently return empty sections.
+
         return {
             "status": "error",
             "message": str(e),
+            "subject": subject,
+            "title": f"Research Report: {subject}",
             "abstract": "",
             "key_findings": [],
             "methodology": "",
@@ -315,6 +368,5 @@ def searcher_agent(plan: dict) -> dict:
             "sources": [],
             "source_count": 0,
             "mode": mode,
-            "input_type": input_type,
-            "subject": subject
+            "input_type": input_type
         }
